@@ -1,37 +1,105 @@
 // https://habr.com/ru/post/165869/
+mod errors;
+
+#[cfg(test)]
+mod tests;
+
 
 use std::collections::HashMap;
+use std::io::{Read,Write};
+use std::net::TcpStream;
+use errors::Error;
+use std::hash::Hash;
+use std::str::FromStr;
 
-const initialServer: &str = "whois.iana.org";
+const ROOT_WHOIS_SERVER: &str = "whois.iana.org";
 
-struct Client {
-    goodServers: HashMap<String, String>,
-    badServers: Vec<String>,
+type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+
+#[derive(Debug, PartialEq)]
+enum Decision<'a> {
+    Ok,
+    NextWhois(NextWhois<'a>),
+}
+
+#[derive(Debug, PartialEq)]
+struct NextWhois<'a>{
+    domain: &'a str,
+    whois_server: &'a str,
+}
+
+pub struct Client {
+    good_servers: HashMap<String, String>,
+    bad_servers: Vec<String>,
 }
 
 impl Client {
-    fn new()->Client{
+    pub fn new()->Client{
         let mut res = Client {
-            goodServers: HashMap::new(),
-            badServers: Vec::new(),
+            good_servers: HashMap::new(),    
+            bad_servers: Vec::new(),
         };
-        res.goodServers.insert("".to_owned(), initialServer.to_owned());
+        res.good_servers.insert("".to_owned(), ROOT_WHOIS_SERVER.to_owned());
         return res;
     }
 
-    fn get_whois_server(&self, domain: &str)->Option<String>{
+    fn get_whois_server(&self, domain: &str)->Result<String>{
         for subdomain in split_domain(domain) {
-            if let Some(server) = self.goodServers.get(subdomain){
-                return Some(server.to_owned());
+            if let Some(server) = self.good_servers.get(subdomain){
+                return Ok(server.to_owned());
             };
-            // .contains need create String
-            for s in &self.badServers {
-                if s == subdomain {
-                    return None;
-                }
+            if self.bad_servers.iter().any(|x| x == subdomain){
+                return Err(Box::new(Error::new("Bad server for whois".to_owned())))
             }
         };
-        return None;
+        return Err(Box::new(Error::new("Logical error. Doesn't find whois server".to_owned())));
+    }
+
+    pub fn get_whois_string(&mut self, domain: &str)->Result<String>{
+        let domainS = domain.to_lowercase();
+        let domain = domainS.as_str();
+        let mut whois_server = self.get_whois_server(domain)?;
+        let mut servers = vec!();
+
+        loop {
+            servers.push(whois_server.to_owned());
+
+            let res = ask_server(&whois_server, domain)?.to_lowercase();
+            let whoisKV = whois_key_value(&res);
+            match decide(domain, &whoisKV, &servers)?{
+                Decision::Ok => {
+                    return Ok(res)
+                },
+                Decision::NextWhois(next_server) => {
+                    whois_server = next_server.whois_server.to_owned();
+                    self.good_servers.insert(next_server.domain.to_owned(), next_server.whois_server.to_owned());
+                }
+            }
+        }
+    }
+
+    pub fn get_whois_kv(&mut self, domain: &str)->Result<HashMap<String,String>>{
+        let whois_string = self.get_whois_string(domain)?;
+        let kv = whois_key_value(whois_string.as_str());
+        let mut res = HashMap::new();
+        for (key, value) in kv.iter(){
+            res.insert(key.to_string(), value.to_string());
+        };
+        return Ok(res);
+    }
+}
+
+type WhoisKV<'a> = HashMap<&'a str, &'a str>;
+fn get_domain<'a>(whois: &'a WhoisKV)->Option<&'a str>{
+    match whois.get("domain"){
+        Some(domain)=>Some(*domain),
+        None => None,
+    }
+}
+fn next_whois_server<'a>(whois: &'a WhoisKV)->Option<&'a str>{
+    match whois.get("whois") {
+        Some(domain) => Some(*domain),
+        None => None,
     }
 }
 
@@ -50,7 +118,19 @@ fn split_domain(domain: &str)->Vec<&str>{
     return res;
 }
 
-fn parse_whois(text: &str) -> HashMap<&str, &str>{
+fn ask_server(server: &str, domain: &str)->Result<String>{
+    let mut conn = TcpStream::connect((server, 43))?;
+
+    conn.write_all(domain.as_bytes())?;
+    conn.write_all("\r\n".as_bytes())?;
+    conn.flush()?;
+
+    let mut res = String::new();
+    conn.read_to_string(&mut res)?;
+    return Ok(res);
+}
+
+fn whois_key_value(text: &str) -> WhoisKV {
     let mut res = HashMap::<&str, &str>::new();
     for line in text.lines(){
         let line = line.trim();
@@ -62,46 +142,39 @@ fn parse_whois(text: &str) -> HashMap<&str, &str>{
     return res;
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+fn containsStr(v: &Vec<String>, need: &str)->bool{
+    return v.iter().any(|item| item == need)
+}
 
-    #[test]
-    fn split_domain_test() {
-        assert_eq!(split_domain(""), vec![""]);
-        assert_eq!(split_domain("."), vec![""]);
-        assert_eq!(split_domain("ru"), vec!["ru", ""]);
-        assert_eq!(split_domain("test.ru"), vec!["test.ru", "ru", ""]);
-        assert_eq!(split_domain(".test.ru."), vec!["test.ru", "ru", ""]);
-        assert_eq!(split_domain("www.test.ru."), vec!["www.test.ru", "test.ru", "ru", ""]);
-    }
+fn decide<'a>(domain: &'a str, whois: &'a WhoisKV, prev: &Vec<String>) ->Result<Decision<'a>>{
+    let whois_domain = get_domain(whois);
+    if let Some(whois_domain) = whois_domain {
+        if whois_domain == domain {
+            return Ok(Decision::Ok);
+        }
+    };
 
-    #[test]
-    fn get_whois_server_test(){
-        let c = Client::new();
-        assert_eq!(c.get_whois_server(""), Some(initialServer.to_owned()));
-        assert_eq!(c.get_whois_server("ru"), Some(initialServer.to_owned()));
-        assert_eq!(c.get_whois_server("test.ru"), Some(initialServer.to_owned()));
-
-        let mut c = Client::new();
-        c.goodServers.insert("ru".to_owned(), "whois.ru".to_owned());
-        c.goodServers.insert("edu.ru".to_owned(), "whois-test.edu.ru".to_owned());
-        c.goodServers.insert("com".to_owned(), "whois-test.com".to_owned());
-        c.badServers.push("bad".to_owned());
-        assert_eq!(c.get_whois_server(""), Some(initialServer.to_owned()));
-        assert_eq!(c.get_whois_server("ru"), Some("whois.ru".to_owned()));
-        assert_eq!(c.get_whois_server("test.ru"), Some("whois.ru".to_owned()));
-        assert_eq!(c.get_whois_server("test.bad"), None);
-    }
-
-    #[test]
-    fn parse_whois_test(){
-        let text = "Domain Name: asd.com
-testVal : aAa,
-";
-        let parsed = parse_whois(text);
-        assert_eq!(parsed.get("Domain Name"), Some(&"asd.com"));
-        assert_eq!(parsed.get("testVal"), Some(&"aAa,"));
-        assert_eq!(parsed.get("asd"), None);
+    let whois_server = if let Some(whois_server) = next_whois_server(whois) {
+        let next = NextWhois
+        {
+            whois_server,
+            domain: if let Some(whois_domain) = whois_domain {
+                whois_domain
+            } else {
+                domain
+            }
+        };
+        Some(next)
+    } else {
+        None
+    };
+    return if let Some(whois_server) = whois_server {
+        if prev.iter().any(|item|item == whois_server.whois_server) {
+            Err(Box::new(Error::new("servers loop".to_owned())))
+        } else {
+            Ok(Decision::NextWhois(whois_server))
+        }
+    } else {
+        Err(Box::new(Error::new("Can't find info about domain/next whois server".to_owned())))
     }
 }
