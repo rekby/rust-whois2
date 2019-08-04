@@ -129,8 +129,7 @@ fn split_domain(domain: &str)->Vec<&str>{
 fn ask_server(server: &str, domain: &str)->Result<String>{
     let mut conn = TcpStream::connect((server, 43))?;
 
-    conn.write_all(domain.as_bytes())?;
-    conn.write_all("\r\n".as_bytes())?;
+    conn.write_all((domain.to_string() + "\r\n").as_bytes())?;
     conn.flush()?;
 
     let mut res = String::new();
