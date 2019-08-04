@@ -96,10 +96,12 @@ impl Client {
 
 type WhoisKV<'a> = HashMap<&'a str, &'a str>;
 fn get_domain<'a>(whois: &'a WhoisKV)->Option<&'a str>{
-    match whois.get("domain"){
-        Some(domain)=>Some(*domain),
-        None => None,
-    }
+    for key in &["domain", "domain name"]{
+        if let Some(domain) = whois.get(key) {
+            return Some(*domain);
+        }
+    };
+    return None;
 }
 
 fn next_whois_server<'a>(whois: &'a WhoisKV)->Option<&'a str>{
