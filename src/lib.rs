@@ -56,17 +56,22 @@ impl Client {
     }
 
     pub fn get_whois_string(&mut self, domain: &str)->Result<String>{
-        let domainS = domain.to_lowercase();
-        let domain = domainS.as_str();
-        let mut whois_server = self.get_whois_server(domain)?;
+        let domain = match idna::domain_to_ascii(domain) {
+            Ok(domain) => domain,
+            Err(err)=> {
+                return Err(Box::new(errors::Error::new(format!("Can't convert domain '{}' to punycode: {:?}", domain, err))));
+            },
+        };
+        let domain= domain.to_lowercase();
+        let mut whois_server = self.get_whois_server(&domain)?;
         let mut servers = vec!();
 
         loop {
             servers.push(whois_server.to_owned());
 
-            let res = ask_server(&whois_server, domain)?.to_lowercase();
-            let whoisKV = whois_key_value(&res);
-            match decide(domain, &whoisKV, &servers)?{
+            let res = ask_server(&whois_server, &domain)?.to_lowercase();
+            let whois_kv = whois_key_value(&res);
+            match decide(&domain, &whois_kv, &servers)?{
                 Decision::Ok => {
                     return Ok(res)
                 },
@@ -96,6 +101,7 @@ fn get_domain<'a>(whois: &'a WhoisKV)->Option<&'a str>{
         None => None,
     }
 }
+
 fn next_whois_server<'a>(whois: &'a WhoisKV)->Option<&'a str>{
     match whois.get("whois") {
         Some(domain) => Some(*domain),
@@ -142,7 +148,7 @@ fn whois_key_value(text: &str) -> WhoisKV {
     return res;
 }
 
-fn containsStr(v: &Vec<String>, need: &str)->bool{
+fn contains_str(v: &Vec<String>, need: &str) ->bool{
     return v.iter().any(|item| item == need)
 }
 
