@@ -14,7 +14,7 @@ use std::str::FromStr;
 
 const ROOT_WHOIS_SERVER: &str = "whois.iana.org";
 
-type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+type Result<T> = std::result::Result<T, errors::Error>;
 
 #[derive(Debug, PartialEq)]
 enum Decision<'a> {
@@ -39,7 +39,6 @@ impl Client {
             good_servers: HashMap::new(),    
             bad_servers: Vec::new(),
         };
-        res.good_servers.insert("".to_owned(), ROOT_WHOIS_SERVER.to_owned());
         return res;
     }
 
@@ -49,19 +48,14 @@ impl Client {
                 return Ok(server.to_owned());
             };
             if self.bad_servers.iter().any(|x| x == subdomain){
-                return Err(Box::new(Error::new("Bad server for whois".to_owned())))
+                return Err(Error::BadWhoisForDomain);
             }
         };
-        return Err(Box::new(Error::new("Logical error. Doesn't find whois server".to_owned())));
+        return Ok(ROOT_WHOIS_SERVER.to_owned());
     }
 
     pub fn get_whois_string(&mut self, domain: &str)->Result<String>{
-        let domain = match idna::domain_to_ascii(domain) {
-            Ok(domain) => domain,
-            Err(err)=> {
-                return Err(Box::new(errors::Error::new(format!("Can't convert domain '{}' to punycode: {:?}", domain, err))));
-            },
-        };
+        let domain = idna::domain_to_ascii(domain)?;
         let domain= domain.to_lowercase();
         let mut whois_server = self.get_whois_server(&domain)?;
         let mut servers = vec!();
@@ -177,11 +171,11 @@ fn decide<'a>(domain: &'a str, whois: &'a WhoisKV, prev: &Vec<String>) ->Result<
     };
     return if let Some(whois_server) = whois_server {
         if prev.iter().any(|item|item == whois_server.whois_server) {
-            Err(Box::new(Error::new("servers loop".to_owned())))
+            Err(Error::WhoisServerLoop(whois_server.whois_server.to_owned()))
         } else {
             Ok(Decision::NextWhois(whois_server))
         }
     } else {
-        Err(Box::new(Error::new("Can't find info about domain/next whois server".to_owned())))
+        Err(Error::CantFindWhoisServer)
     }
 }

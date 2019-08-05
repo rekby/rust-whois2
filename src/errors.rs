@@ -1,23 +1,37 @@
 use std::error::Error as stdErr;
-use std::fmt::Display;
+use std::fmt::{Display, Debug, Write, Pointer};
 
-#[derive(Debug, Clone)]
-pub struct Error {
-    error: String,
+#[derive(Debug)]
+pub enum Error {
+    BadWhoisForDomain,
+    ConvertToPunycode(idna::Errors),
+    WhoisServerLoop(String),
+    CantFindWhoisServer,
+    Network(std::io::Error),
 }
 
-impl Error {
-    pub fn new(error: String)->Error{
-        return Error{error}
-    }
-}
+use Error::*;
 
 impl Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result{
-        return self.error.fmt(f)
+        match self {
+            BadWhoisForDomain => f.write_str(format!("{:?}", *self).as_str()),
+            ConvertToPunycode(errors)=>f.write_str(format!("Error convert to punycode: {:?}", errors).as_str()),
+            WhoisServerLoop(domain)=>f.write_str(format!("Whois server loop: {}", domain).as_str()),
+            CantFindWhoisServer=>f.write_str(format!("{:?}", *self).as_str()),
+            Network(err)=>Display::fmt(err, f),
+        }
     }
 }
 
-impl std::error::Error for Error{
+impl From<idna::Errors> for Error{
+    fn from(err: idna::Errors)->Error {
+        ConvertToPunycode(err)
+    }
+}
 
+impl From<std::io::Error> for Error {
+    fn from(err: std::io::Error)->Error{
+        Network(err)
+    }
 }
